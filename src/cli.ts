@@ -15,10 +15,17 @@ export interface HomeAssistantEntity {
   last_updated: string; // ISO 8601 timestamp
 }
 
-const HA_URL = process.env.HOME_ASSISTANT_URL!;
-const HA_TOKEN = process.env.HOME_ASSISTANT_TOKEN!;
-const SNAPSHOT_PATH = process.env.SNAPSHOT_PATH!;
+
+const HA_URL = process.env.HOME_ASSISTANT_URL;
+const HA_TOKEN = process.env.HOME_ASSISTANT_TOKEN;
+const SNAPSHOT_PATH = process.env.SNAPSHOT_PATH;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const defaultPrompt = `Describe the image naturally, as if you're telling a friend what you see. Mention who’s in it, what they look like, and what they might be doing or feeling. If there are people in the photo please describe them in detail. Tell me their hair colour, eye colour, clothing, and any other notable features. `;
+
+if (!HA_URL || !HA_TOKEN || !SNAPSHOT_PATH || !OPENAI_API_KEY) {
+  console.error("❌ Missing required environment variables. Please check the README and add a .env file with the necessary configuration.");
+  process.exit(1);
+}
 
 async function getEntityStates(): Promise<HomeAssistantEntity[]> {
   const entityStates = (await homeAssistantRequest<HomeAssistantEntity[]>("/api/states"));
@@ -104,7 +111,7 @@ async function triggerSnapshot(entity: HomeAssistantEntity): Promise<void> {
   const url = `${HA_URL}/api/services/camera/snapshot`;
   const payload = {
     entity_id: entity.entity_id,
-    filename: `/config/www/${SNAPSHOT_PATH.replace(/^\/local\//, '')}`,
+    filename: `/config/www/${(SNAPSHOT_PATH as string).replace(/^\/local\//, '')}`,
   };
 
   try {
