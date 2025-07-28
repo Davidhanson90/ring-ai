@@ -22,7 +22,11 @@ const defaultPrompt = `Describe the image naturally, as if you're telling a frie
 
 async function getEntityStates(): Promise<HomeAssistantEntity[]> {
   const entityStates = (await homeAssistantRequest<HomeAssistantEntity[]>("/api/states"));
-  const entityStatesFile = join(__dirname, 'output', 'enity-states.json');
+  const outputDir = join(__dirname, 'output');
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+  const entityStatesFile = join(outputDir, 'enity-states.json');
   fs.writeFileSync(entityStatesFile, JSON.stringify(entityStates, null, 2));
   return entityStates;
 }
@@ -72,7 +76,11 @@ async function saveCameraSnapshot(entityPicturePath: string): Promise<string | u
   }
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const outputFilePath = join(__dirname, 'output', `snapshot_${entityName}_${timestamp}.jpg`);
+  const outputDir = join(__dirname, 'output');
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+  const outputFilePath = join(outputDir, `snapshot_${entityName}_${timestamp}.jpg`);
 
   console.log(`Attemping to download ${url}`);
 
