@@ -188,6 +188,17 @@ async function main() {
   const apiKey = process.env.OPENAI_API_KEY;
   const openai = new OpenAI({ apiKey });
 
+  // Ask user for a custom OpenAI prompt
+  const promptQuestion: any = [
+    {
+      type: 'input',
+      name: 'customPrompt',
+      message: 'Enter the prompt you want to use for image description (leave blank for default):',
+      default: ''
+    }
+  ];
+  const { customPrompt } = await inquirer.prompt(promptQuestion);
+  const userPrompt = customPrompt && customPrompt.trim().length > 0 ? customPrompt.trim() : defaultPrompt;
 
   // Ask user if they want to send device notifications
   const notifyPrompt: any = [
@@ -321,7 +332,7 @@ async function main() {
             {
               role: "user",
               content: [
-                { type: "text", text: defaultPrompt },
+                { type: "text", text: userPrompt },
                 {
                   type: "image_url",
                   image_url: {
