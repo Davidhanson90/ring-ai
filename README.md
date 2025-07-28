@@ -8,6 +8,8 @@ npm start
 
 Ring AI CLI is a TypeScript Node.js command-line tool for monitoring and describing smart home camera snapshots using Home Assistant and OpenAI. It connects to your Home Assistant instance, lets you select cameras, triggers snapshots, compares images, and uses OpenAI to generate natural language descriptions of what’s in each photo. It can also send notifications to your mobile device with the generated descriptions.
 
+![Example](assets/example.png)
+
 ## Features
 - Connects to Home Assistant and lists available camera entities (requires the ring integration)
 - Triggers camera snapshots and saves images
