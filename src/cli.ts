@@ -142,22 +142,8 @@ async function connectToHomeAssistant(): Promise<boolean> {
   return true;
 }
 
-async function main() {
-  // Connect to Home Assistant
-  await connectToHomeAssistant();
 
-  // Get the entity states
-  const entityStates = await getEntityStates();
-
-  // Filter for camera entities
-  const cameraEntities = entityStates.filter(e => e.entity_id && e.entity_id.startsWith('camera.'));
-  if (cameraEntities.length === 0) {
-    console.log('No camera entities found.');
-    process.exit(1);
-  }
-
-
-  // Prompt user to select multiple cameras
+async function selectCameras(cameraEntities: HomeAssistantEntity[]): Promise<string[]> {
   const cameraPrompt: any = [
     {
       type: 'checkbox',
@@ -168,8 +154,10 @@ async function main() {
     }
   ];
   const { selectedCameras } = await inquirer.prompt(cameraPrompt);
+  return selectedCameras;
+}
 
-  // Prompt user for interval
+async function selectInterval(): Promise<number> {
   const intervalPrompt: any = [
     {
       type: 'list',
@@ -184,11 +172,10 @@ async function main() {
     }
   ];
   const { interval } = await inquirer.prompt(intervalPrompt);
+  return interval;
+}
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  const openai = new OpenAI({ apiKey });
-
-  // Ask user for a custom OpenAI prompt
+async function getUserPrompt(): Promise<string> {
   const promptQuestion: any = [
     {
       type: 'input',
@@ -198,9 +185,10 @@ async function main() {
     }
   ];
   const { customPrompt } = await inquirer.prompt(promptQuestion);
-  const userPrompt = customPrompt && customPrompt.trim().length > 0 ? customPrompt.trim() : defaultPrompt;
+  return customPrompt && customPrompt.trim().length > 0 ? customPrompt.trim() : defaultPrompt;
+}
 
-  // Ask user if they want to send device notifications
+async function askSendNotifications(): Promise<boolean> {
   const notifyPrompt: any = [
     {
       type: 'confirm',
@@ -210,199 +198,219 @@ async function main() {
     }
   ];
   const { sendNotifications } = await inquirer.prompt(notifyPrompt);
+  return sendNotifications;
+}
 
-  let selectedDeviceTracker: string | undefined;
-  if (sendNotifications) {
-    // Load device trackers from entity-states.json
-    const entityStatesRaw = fs.readFileSync(join(__dirname, 'output', 'enity-states.json'), 'utf-8');
-    let entityStatesJson: any[] = [];
-    try {
-      entityStatesJson = JSON.parse(entityStatesRaw);
-    } catch (err) {
-      console.error('❌ Failed to parse enity-states.json:', err);
-    }
-
-    // Find all device trackers from person entities
-    const deviceTrackersSet = new Set<string>();
-    for (const entity of entityStatesJson) {
-      if (entity.entity_id && entity.entity_id.startsWith('person.') && entity.attributes?.device_trackers) {
-        for (const tracker of entity.attributes.device_trackers) {
-          deviceTrackersSet.add(tracker);
-        }
+function getDeviceTrackersFromEntityStates(): string[] {
+  const entityStatesRaw = fs.readFileSync(join(__dirname, 'output', 'enity-states.json'), 'utf-8');
+  let entityStatesJson: any[] = [];
+  try {
+    entityStatesJson = JSON.parse(entityStatesRaw);
+  } catch (err) {
+    console.error('❌ Failed to parse enity-states.json:', err);
+  }
+  const deviceTrackersSet = new Set<string>();
+  for (const entity of entityStatesJson) {
+    if (entity.entity_id && entity.entity_id.startsWith('person.') && entity.attributes?.device_trackers) {
+      for (const tracker of entity.attributes.device_trackers) {
+        deviceTrackersSet.add(tracker);
       }
     }
-    const deviceTrackers = Array.from(deviceTrackersSet);
-    if (deviceTrackers.length === 0) {
-      console.error('❌ No device trackers found in enity-states.json. Notifications will not be sent.');
-    } else {
-      // Prompt user to select a device tracker
-      const devicePrompt: any = [
-        {
-          type: 'list',
-          name: 'selectedDeviceTracker',
-          message: 'Select a device to send notifications to:',
-          choices: deviceTrackers.map(dt => ({ name: dt, value: dt })),
-        }
-      ];
-      const deviceAnswer = await inquirer.prompt(devicePrompt);
-      selectedDeviceTracker = deviceAnswer.selectedDeviceTracker;
-    }
   }
+  return Array.from(deviceTrackersSet);
+}
 
-  async function processCameras() {
-    for (const entityId of selectedCameras) {
-      try {
-        const entity = getEntity(entityStates, entityId);
-        if (!entity) {
-          console.error(`❌ Entity ${entityId} not found.`);
-          continue;
-        }
+async function selectDeviceTracker(deviceTrackers: string[]): Promise<string | undefined> {
+  if (deviceTrackers.length === 0) {
+    console.error('❌ No device trackers found in enity-states.json. Notifications will not be sent.');
+    return undefined;
+  }
+  const devicePrompt: any = [
+    {
+      type: 'list',
+      name: 'selectedDeviceTracker',
+      message: 'Select a device to send notifications to:',
+      choices: deviceTrackers.map(dt => ({ name: dt, value: dt })),
+    }
+  ];
+  const deviceAnswer = await inquirer.prompt(devicePrompt);
+  return deviceAnswer.selectedDeviceTracker;
+}
 
-        try {
-          await triggerSnapshot(entity);
-        } catch (err) {
-          console.error(`❌ Failed to trigger snapshot for ${entityId}:`, err);
-          // Continue to try downloading the image anyway
-        }
-
-        let filePath: string | undefined;
-        try {
-          filePath = await getPhotoFile(entity);
-          if (!filePath) throw new Error('No file path returned');
-        } catch (err) {
-          console.error(`❌ Failed to retrieve photo for entity ${entityId}:`, err);
-          continue;
-        }
-
-        // Find the most recent previous snapshot for this entity
-        const outputDir = join(__dirname, 'output');
-        let entityName = entityId.replace('camera.', '');
-        let previousSnapshots: string[] = [];
-        try {
-          previousSnapshots = fs.readdirSync(outputDir)
-            .filter(f => f.startsWith(`snapshot_${entityName}_`) && f.endsWith('.jpg'))
-            .sort()
-            .reverse();
-        } catch (err) {
-          // ignore dir read errors
-        }
-
-        let isSame = false;
-        if (previousSnapshots.length > 1) {
-          // The first is the current, the second is the previous
-          const prevFile = join(outputDir, previousSnapshots[1]);
-          try {
-            const prevBuffer = fs.readFileSync(prevFile);
-            const currBuffer = fs.readFileSync(filePath);
-            // Compare hashes for efficiency
-            const prevHash = crypto.createHash('sha256').update(prevBuffer).digest('hex');
-            const currHash = crypto.createHash('sha256').update(currBuffer).digest('hex');
-            if (prevHash === currHash) {
-              isSame = true;
-              // Delete the previous file if it's the same as the new one
-              try {
-                fs.unlinkSync(prevFile);
-                console.log(`🗑️ Deleted previous identical snapshot for ${entityId}: ${prevFile}`);
-              } catch (delErr) {
-                console.error(`❌ Failed to delete previous identical snapshot for ${entityId}:`, delErr);
-              }
-            }
-          } catch (err) {
-            // ignore file read errors
-          }
-        }
-
-        if (isSame) {
-          console.log(`No new updates for ${entityId}: latest snapshot is identical to previous (previous deleted).`);
-          continue;
-        }
-
-        // Read and encode the image as base64
-        let base64Image: string;
-        try {
-          base64Image = getFileAsBase64(filePath);
-        } catch (err) {
-          console.error(`❌ Failed to read image file for ${entityId}:`, err);
-          continue;
-        }
-
-        try {
-          let messages: any[] = [
-            { role: "system", content: "You are a helpful assistant." },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: userPrompt },
-                {
-                  type: "image_url",
-                  image_url: {
-                    url: `data:image/jpeg;base64,${base64Image}`,
-                  },
-                },
-              ],
-            }
-          ];
-
-          const chatCompletion = await openai.chat.completions.create({
-            model: "gpt-4o",
-            messages,
-          });
-          
-          const response = chatCompletion.choices[0]?.message?.content;
-          console.log(`\nOpenAI response for ${entityId}:\n${response}`);
-
-          // Only send device notifications if user chose yes and a device tracker is selected
-          if (sendNotifications && selectedDeviceTracker) {
-            try {
-              // Convert device_tracker.<name> to mobile_app_<name> for notify service
-              const trackerName = selectedDeviceTracker.replace('device_tracker.', '');
-              const notifyUrl = `${HA_URL}/api/services/notify/mobile_app_${trackerName}`;
-              const maxLen = 240;
-              const msg = response || 'No description returned.';
-              // Split the message into chunks of maxLen
-              for (let i = 0; i < msg.length; i += maxLen) {
-                const chunk = msg.slice(i, i + maxLen);
-                const notifyPayload = {
-                  message: chunk,
-                  title: `Camera update: ${entityId}${msg.length > maxLen ? ` (part ${Math.floor(i / maxLen) + 1})` : ''}`,
-                  data: {
-                    channel: 'alert',
-                    importance: 'max',
-                    ttl: 0,
-                    priority: 'high',
-                    notification: {
-                      style: 'bigtext',
-                      bigText: chunk
-                    }
-                  }
-                };
-                await axios.post(notifyUrl, notifyPayload, {
-                  headers: {
-                    'Authorization': `Bearer ${HA_TOKEN}`,
-                    'Content-Type': 'application/json',
-                  },
-                });
-                console.log(`✅ Notification sent to ${selectedDeviceTracker}${msg.length > maxLen ? ` (part ${Math.floor(i / maxLen) + 1})` : ''}.`);
-              }
-            } catch (err) {
-              console.error(`❌ Failed to send notification for ${entityId}:`, err);
-            }
-          }
-        } catch (err) {
-          console.error(`❌ OpenAI API error for ${entityId}:`, err);
-          continue;
-        }
-      } catch (err) {
-        console.error(`❌ Unexpected error for ${entityId}:`, err);
+async function processCameras(selectedCameras: string[], entityStates: HomeAssistantEntity[], userPrompt: string, sendNotifications: boolean, selectedDeviceTracker: string | undefined, openai: OpenAI) {
+  for (const entityId of selectedCameras) {
+    try {
+      const entity = getEntity(entityStates, entityId);
+      if (!entity) {
+        console.error(`❌ Entity ${entityId} not found.`);
         continue;
       }
+
+      try {
+        await triggerSnapshot(entity);
+      } catch (err) {
+        console.error(`❌ Failed to trigger snapshot for ${entityId}:`, err);
+        // Continue to try downloading the image anyway
+      }
+
+      let filePath: string | undefined;
+      try {
+        filePath = await getPhotoFile(entity);
+        if (!filePath) throw new Error('No file path returned');
+      } catch (err) {
+        console.error(`❌ Failed to retrieve photo for entity ${entityId}:`, err);
+        continue;
+      }
+
+      // Find the most recent previous snapshot for this entity
+      const outputDir = join(__dirname, 'output');
+      let entityName = entityId.replace('camera.', '');
+      let previousSnapshots: string[] = [];
+      try {
+        previousSnapshots = fs.readdirSync(outputDir)
+          .filter(f => f.startsWith(`snapshot_${entityName}_`) && f.endsWith('.jpg'))
+          .sort()
+          .reverse();
+      } catch (err) {
+        // ignore dir read errors
+      }
+
+      let isSame = false;
+      if (previousSnapshots.length > 1) {
+        // The first is the current, the second is the previous
+        const prevFile = join(outputDir, previousSnapshots[1]);
+        try {
+          const prevBuffer = fs.readFileSync(prevFile);
+          const currBuffer = fs.readFileSync(filePath);
+          // Compare hashes for efficiency
+          const prevHash = crypto.createHash('sha256').update(prevBuffer).digest('hex');
+          const currHash = crypto.createHash('sha256').update(currBuffer).digest('hex');
+          if (prevHash === currHash) {
+            isSame = true;
+            // Delete the previous file if it's the same as the new one
+            try {
+              fs.unlinkSync(prevFile);
+              console.log(`🗑️ Deleted previous identical snapshot for ${entityId}: ${prevFile}`);
+            } catch (delErr) {
+              console.error(`❌ Failed to delete previous identical snapshot for ${entityId}:`, delErr);
+            }
+          }
+        } catch (err) {
+          // ignore file read errors
+        }
+      }
+
+      if (isSame) {
+        console.log(`No new updates for ${entityId}: latest snapshot is identical to previous (previous deleted).`);
+        continue;
+      }
+
+      // Read and encode the image as base64
+      let base64Image: string;
+      try {
+        base64Image = getFileAsBase64(filePath);
+      } catch (err) {
+        console.error(`❌ Failed to read image file for ${entityId}:`, err);
+        continue;
+      }
+
+      try {
+        let messages: any[] = [
+          { role: "system", content: "You are a helpful assistant." },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: userPrompt },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${base64Image}`,
+                },
+              },
+            ],
+          }
+        ];
+
+        const chatCompletion = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages,
+        });
+        
+        const response = chatCompletion.choices[0]?.message?.content;
+        console.log(`\nOpenAI response for ${entityId}:\n${response}`);
+
+        // Only send device notifications if user chose yes and a device tracker is selected
+        if (sendNotifications && selectedDeviceTracker) {
+          try {
+            // Convert device_tracker.<name> to mobile_app_<name> for notify service
+            const trackerName = selectedDeviceTracker.replace('device_tracker.', '');
+            const notifyUrl = `${HA_URL}/api/services/notify/mobile_app_${trackerName}`;
+            const maxLen = 240;
+            const msg = response || 'No description returned.';
+            // Split the message into chunks of maxLen
+            for (let i = 0; i < msg.length; i += maxLen) {
+              const chunk = msg.slice(i, i + maxLen);
+              const notifyPayload = {
+                message: chunk,
+                title: `Camera update: ${entityId}${msg.length > maxLen ? ` (part ${Math.floor(i / maxLen) + 1})` : ''}`,
+                data: {
+                  channel: 'alert',
+                  importance: 'max',
+                  ttl: 0,
+                  priority: 'high',
+                  notification: {
+                    style: 'bigtext',
+                    bigText: chunk
+                  }
+                }
+              };
+              await axios.post(notifyUrl, notifyPayload, {
+                headers: {
+                  'Authorization': `Bearer ${HA_TOKEN}`,
+                  'Content-Type': 'application/json',
+                },
+              });
+              console.log(`✅ Notification sent to ${selectedDeviceTracker}${msg.length > maxLen ? ` (part ${Math.floor(i / maxLen) + 1})` : ''}.`);
+            }
+          } catch (err) {
+            console.error(`❌ Failed to send notification for ${entityId}:`, err);
+          }
+        }
+      } catch (err) {
+        console.error(`❌ OpenAI API error for ${entityId}:`, err);
+        continue;
+      }
+    } catch (err) {
+      console.error(`❌ Unexpected error for ${entityId}:`, err);
+      continue;
     }
   }
+}
 
-  // Run the process at the selected interval
+async function main() {
+  await connectToHomeAssistant();
+  const entityStates = await getEntityStates();
+  const cameraEntities = entityStates.filter(e => e.entity_id && e.entity_id.startsWith('camera.'));
+  if (cameraEntities.length === 0) {
+    console.log('No camera entities found.');
+    process.exit(1);
+  }
+  const selectedCameras = await selectCameras(cameraEntities);
+  const interval = await selectInterval();
+  const apiKey = process.env.OPENAI_API_KEY;
+  const openai = new OpenAI({ apiKey });
+  const userPrompt = await getUserPrompt();
+  const sendNotifications = await askSendNotifications();
+  let selectedDeviceTracker: string | undefined = undefined;
+  if (sendNotifications) {
+    const deviceTrackers = getDeviceTrackersFromEntityStates();
+    selectedDeviceTracker = await selectDeviceTracker(deviceTrackers);
+  }
   console.log(`\nStarting camera check every ${interval} minute(s). Press Ctrl+C to stop.\n`);
-  await processCameras();
-  setInterval(processCameras, interval * 60 * 1000);
+  await processCameras(selectedCameras, entityStates, userPrompt, sendNotifications, selectedDeviceTracker, openai);
+  setInterval(() => {
+    processCameras(selectedCameras, entityStates, userPrompt, sendNotifications, selectedDeviceTracker, openai);
+  }, interval * 60 * 1000);
 }
 
 main();
