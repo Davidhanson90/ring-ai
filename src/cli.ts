@@ -188,6 +188,56 @@ async function main() {
   const apiKey = process.env.OPENAI_API_KEY;
   const openai = new OpenAI({ apiKey });
 
+
+  // Ask user if they want to send device notifications
+  const notifyPrompt: any = [
+    {
+      type: 'confirm',
+      name: 'sendNotifications',
+      message: 'Do you want to send device notifications?',
+      default: false
+    }
+  ];
+  const { sendNotifications } = await inquirer.prompt(notifyPrompt);
+
+  let selectedDeviceTracker: string | undefined;
+  if (sendNotifications) {
+    // Load device trackers from entity-states.json
+    const entityStatesRaw = fs.readFileSync(join(__dirname, 'output', 'enity-states.json'), 'utf-8');
+    let entityStatesJson: any[] = [];
+    try {
+      entityStatesJson = JSON.parse(entityStatesRaw);
+    } catch (err) {
+      console.error('❌ Failed to parse enity-states.json:', err);
+    }
+
+    // Find all device trackers from person entities
+    const deviceTrackersSet = new Set<string>();
+    for (const entity of entityStatesJson) {
+      if (entity.entity_id && entity.entity_id.startsWith('person.') && entity.attributes?.device_trackers) {
+        for (const tracker of entity.attributes.device_trackers) {
+          deviceTrackersSet.add(tracker);
+        }
+      }
+    }
+    const deviceTrackers = Array.from(deviceTrackersSet);
+    if (deviceTrackers.length === 0) {
+      console.error('❌ No device trackers found in enity-states.json. Notifications will not be sent.');
+    } else {
+      // Prompt user to select a device tracker
+      const devicePrompt: any = [
+        {
+          type: 'list',
+          name: 'selectedDeviceTracker',
+          message: 'Select a device to send notifications to:',
+          choices: deviceTrackers.map(dt => ({ name: dt, value: dt })),
+        }
+      ];
+      const deviceAnswer = await inquirer.prompt(devicePrompt);
+      selectedDeviceTracker = deviceAnswer.selectedDeviceTracker;
+    }
+  }
+
   async function processCameras() {
     for (const entityId of selectedCameras) {
       try {
@@ -290,38 +340,42 @@ async function main() {
           const response = chatCompletion.choices[0]?.message?.content;
           console.log(`\nOpenAI response for ${entityId}:\n${response}`);
 
-          // Send notification to Home Assistant device 'Pixel 9 Pro XL', splitting if longer than 240 chars
-          try {
-            const notifyUrl = `${HA_URL}/api/services/notify/mobile_app_pixel_9_pro_xl`;
-            const maxLen = 240;
-            const msg = response || 'No description returned.';
-            // Split the message into chunks of maxLen
-            for (let i = 0; i < msg.length; i += maxLen) {
-              const chunk = msg.slice(i, i + maxLen);
-              const notifyPayload = {
-                message: chunk,
-                title: `Camera update: ${entityId}${msg.length > maxLen ? ` (part ${Math.floor(i / maxLen) + 1})` : ''}`,
-                data: {
-                  channel: 'alert',
-                  importance: 'max',
-                  ttl: 0,
-                  priority: 'high',
-                  notification: {
-                    style: 'bigtext',
-                    bigText: chunk
+          // Only send device notifications if user chose yes and a device tracker is selected
+          if (sendNotifications && selectedDeviceTracker) {
+            try {
+              // Convert device_tracker.<name> to mobile_app_<name> for notify service
+              const trackerName = selectedDeviceTracker.replace('device_tracker.', '');
+              const notifyUrl = `${HA_URL}/api/services/notify/mobile_app_${trackerName}`;
+              const maxLen = 240;
+              const msg = response || 'No description returned.';
+              // Split the message into chunks of maxLen
+              for (let i = 0; i < msg.length; i += maxLen) {
+                const chunk = msg.slice(i, i + maxLen);
+                const notifyPayload = {
+                  message: chunk,
+                  title: `Camera update: ${entityId}${msg.length > maxLen ? ` (part ${Math.floor(i / maxLen) + 1})` : ''}`,
+                  data: {
+                    channel: 'alert',
+                    importance: 'max',
+                    ttl: 0,
+                    priority: 'high',
+                    notification: {
+                      style: 'bigtext',
+                      bigText: chunk
+                    }
                   }
-                }
-              };
-              await axios.post(notifyUrl, notifyPayload, {
-                headers: {
-                  'Authorization': `Bearer ${HA_TOKEN}`,
-                  'Content-Type': 'application/json',
-                },
-              });
-              console.log(`✅ Notification sent to Pixel 9 Pro XL${msg.length > maxLen ? ` (part ${Math.floor(i / maxLen) + 1})` : ''}.`);
+                };
+                await axios.post(notifyUrl, notifyPayload, {
+                  headers: {
+                    'Authorization': `Bearer ${HA_TOKEN}`,
+                    'Content-Type': 'application/json',
+                  },
+                });
+                console.log(`✅ Notification sent to ${selectedDeviceTracker}${msg.length > maxLen ? ` (part ${Math.floor(i / maxLen) + 1})` : ''}.`);
+              }
+            } catch (err) {
+              console.error(`❌ Failed to send notification for ${entityId}:`, err);
             }
-          } catch (err) {
-            console.error(`❌ Failed to send notification for ${entityId}:`, err);
           }
         } catch (err) {
           console.error(`❌ OpenAI API error for ${entityId}:`, err);
