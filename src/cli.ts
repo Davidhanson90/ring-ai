@@ -225,15 +225,31 @@ async function selectDeviceTracker(deviceTrackers: string[]): Promise<string | u
     console.error('❌ No device trackers found in enity-states.json. Notifications will not be sent.');
     return undefined;
   }
+  const choices = [
+    ...deviceTrackers.map(dt => ({ name: dt, value: dt })),
+    { name: 'I will enter it', value: '__manual__' }
+  ];
   const devicePrompt: any = [
     {
       type: 'list',
       name: 'selectedDeviceTracker',
       message: 'Select a device to send notifications to:',
-      choices: deviceTrackers.map(dt => ({ name: dt, value: dt })),
+      choices
     }
   ];
   const deviceAnswer = await inquirer.prompt(devicePrompt);
+  if (deviceAnswer.selectedDeviceTracker === '__manual__') {
+    const manualPrompt: any = [
+      {
+        type: 'input',
+        name: 'manualDeviceTracker',
+        message: 'Enter the device_tracker entity name (e.g., device_tracker.my_phone):',
+        validate: (input: string) => input.startsWith('device_tracker.') ? true : 'Device name must start with device_tracker.'
+      }
+    ];
+    const manualAnswer = await inquirer.prompt(manualPrompt);
+    return manualAnswer.manualDeviceTracker;
+  }
   return deviceAnswer.selectedDeviceTracker;
 }
 
